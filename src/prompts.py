@@ -14,7 +14,8 @@ def load_prompts(path: str) -> List[str]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"prompts file not found: {path}")
-    data = json.loads(p.read_text(encoding="utf-8"))
+    # utf-8-sig transparently handles a leading BOM if present
+    data = json.loads(p.read_text(encoding="utf-8-sig"))
 
     if isinstance(data, dict):
         prompts = [str(v) for v in data.values()]
