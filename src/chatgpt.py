@@ -77,13 +77,10 @@ async def _check_for_errors(page):
 async def start_new_chat(page):
     await page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
     await page.wait_for_selector(COMPOSER, timeout=30000)
-    await asyncio.sleep(1.0)
 
 
 async def type_prompt(page, text: str):
     await page.wait_for_selector(COMPOSER, timeout=15000)
-    await asyncio.sleep(2.0)
-    # Use innerHTML approach matching the extension
     await page.evaluate(
         """(text) => {
             const el = document.querySelector('#prompt-textarea[contenteditable="true"]');
@@ -93,7 +90,6 @@ async def type_prompt(page, text: str):
         }""",
         text,
     )
-    await asyncio.sleep(1.5)
 
 
 async def submit_prompt(page):
@@ -103,8 +99,6 @@ async def submit_prompt(page):
 
 async def wait_for_image_generation(page, prev_count: int, timeout_s: int = 360):
     """Wait until a new generated image appears in the conversation."""
-    await asyncio.sleep(2.0)
-
     # Wait for loading indicator (best-effort)
     try:
         await page.wait_for_selector(LOADING_SELECTOR, timeout=30000)
@@ -112,7 +106,7 @@ async def wait_for_image_generation(page, prev_count: int, timeout_s: int = 360)
     except Exception:
         log("loading indicator not found, checking for image directly...")
 
-    # Wait for loading to finish
+    poll = 0.25
     deadline = time.time() + min(300, timeout_s)
     while time.time() < deadline:
         await _check_for_errors(page)
@@ -121,9 +115,7 @@ async def wait_for_image_generation(page, prev_count: int, timeout_s: int = 360)
         )
         if not present:
             break
-        await asyncio.sleep(1)
-
-    await asyncio.sleep(2.0)
+        await asyncio.sleep(poll)
 
     # Now wait for the image element
     double_handled = False
@@ -150,9 +142,7 @@ async def wait_for_image_generation(page, prev_count: int, timeout_s: int = 360)
                     }"""
                 )
                 double_handled = bool(clicked)
-                if clicked:
-                    await asyncio.sleep(5)
-        await asyncio.sleep(1)
+        await asyncio.sleep(poll)
 
     raise GenerationFailed("timed out waiting for image to render")
 
@@ -175,8 +165,12 @@ async def download_image(page, prompt: str, output_dir: Path) -> Path:
             ext = candidate
             break
 
-    fname = f"{slug}-{uuid.uuid4()}{ext}"
-    fpath = output_dir / fname
+    # uuid4 already makes collisions astronomically unlikely, but guard
+    # anyway so a re-run into an existing dir can never overwrite a file.
+    while True:
+        fpath = output_dir / f"{slug}-{uuid.uuid4()}{ext}"
+        if not fpath.exists():
+            break
 
     async with httpx.AsyncClient(
         cookies=jar,
