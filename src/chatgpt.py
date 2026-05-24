@@ -1,6 +1,8 @@
 """ChatGPT image-gen automation, ported from the extension's content.js."""
 
 import asyncio
+import datetime as _dt
+import json
 import os
 import time
 import uuid
@@ -48,6 +50,49 @@ async def _last_image_src(page):
             return imgs.length ? imgs[imgs.length - 1].src : null;
         }"""
     )
+
+
+async def _last_assistant_text(page) -> str:
+    """Full innerText of the most recent conversation turn (assistant reply).
+
+    Used to capture refusal / denial text when we don't get an image, so we
+    can build a corpus of denial phrasings across runs.
+    """
+    try:
+        return await page.evaluate(
+            """() => {
+                const turns = document.querySelectorAll('[data-testid^="conversation-turn-"]');
+                if (turns.length === 0) return '';
+                const last = turns[turns.length - 1];
+                return (last.innerText || '').trim();
+            }"""
+        )
+    except Exception:
+        return ""
+
+
+def log_no_image_response(
+    output_dir: Path,
+    prompt: str,
+    error_type: str,
+    error_msg: str,
+    response_text: str,
+) -> None:
+    """Append a row to no_image_log.jsonl capturing what ChatGPT said instead
+    of generating an image. Builds a corpus of refusal/denial variations
+    that future detection rules can target.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+        "error_type": error_type,
+        "error_msg": error_msg,
+        "prompt": prompt,
+        "response_text": response_text,
+    }
+    log_path = output_dir / "no_image_log.jsonl"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 async def _check_for_errors(page):
@@ -193,6 +238,14 @@ async def generate_one(page, prompt: str, output_dir: Path) -> Path:
     return await download_image(page, prompt, output_dir)
 
 
+async def _record_no_image(page, output_dir: Path, prompt: str, exc: Exception):
+    """Capture the assistant's text reply when generation produced no image."""
+    text = await _last_assistant_text(page)
+    log_no_image_response(
+        output_dir, prompt, type(exc).__name__, str(exc), text
+    )
+
+
 async def generate_batch(page, prompts, output_dir: Path):
     """Generate images for every prompt. Yields (index, prompt, result_path_or_error)."""
     await start_new_chat(page)
@@ -203,18 +256,25 @@ async def generate_batch(page, prompts, output_dir: Path):
             path = await generate_one(page, prompt, output_dir)
             results.append({"prompt": prompt, "ok": True, "path": str(path)})
         except RateLimited as e:
+            await _record_no_image(page, output_dir, prompt, e)
             log(f"rate limited — stopping: {e}", "error")
             results.append({"prompt": prompt, "ok": False, "error": "rate_limited"})
             break
         except ContentDenied as e:
+            await _record_no_image(page, output_dir, prompt, e)
             log(f"content denied: {e}", "error")
             results.append({"prompt": prompt, "ok": False, "error": "content_denied"})
             await asyncio.sleep(5)
         except GenerationFailed as e:
+            await _record_no_image(page, output_dir, prompt, e)
             log(f"generation failed: {e}", "error")
             results.append({"prompt": prompt, "ok": False, "error": str(e)})
             await asyncio.sleep(30)
         except Exception as e:
+            try:
+                await _record_no_image(page, output_dir, prompt, e)
+            except Exception:
+                pass
             log(f"unexpected error: {e}", "error")
             results.append({"prompt": prompt, "ok": False, "error": str(e)})
             await asyncio.sleep(10)

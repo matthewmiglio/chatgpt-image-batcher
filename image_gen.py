@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -27,10 +28,14 @@ async def cmd_auth(_args) -> int:
 
 async def cmd_generate(args) -> int:
     prompts = load_prompts(args.prompts)
+    # Shuffle ingestion order so re-runs against the same file see prompts in
+    # a different sequence (helpful when content denials cluster by topic).
+    # The source file on disk is never modified.
+    random.shuffle(prompts)
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loaded {len(prompts)} prompts from {args.prompts}")
+    print(f"Loaded {len(prompts)} prompts from {args.prompts} (shuffled)")
     print(f"Output dir: {output_dir}")
 
     pw, context, page = await launch_browser(headless=not args.headful)
